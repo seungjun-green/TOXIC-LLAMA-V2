@@ -3,8 +3,9 @@ from transformers import AutoTokenizer, AutoModelForCausalLM, AutoModelForSequen
 from models.dora import add_dora_to_model
 
 class RLHFModelsLoader:
-    def __init__(self, safety_model, base_llm_model, r, lora_alpha, target_modules, lora_dropout):
+    def __init__(self, safety_model, helpfulness_model, base_llm_model, r, lora_alpha, target_modules, lora_dropout):
         self.safety_model = safety_model
+        self.helpfulness_model = helpfulness_model
         self.base_llm_model = base_llm_model
         self.r = r
         self.lora_alpha = lora_alpha
@@ -24,4 +25,9 @@ class RLHFModelsLoader:
     def load_safety_model(self):
         tokenizer = AutoTokenizer.from_pretrained(self.safety_model)
         model = AutoModelForSequenceClassification.from_pretrained(self.safety_model)
+        return tokenizer, model
+
+    def load_helpfulness_model(self):
+        tokenizer = AutoTokenizer.from_pretrained(self.helpfulness_model)
+        model = AutoModelForSequenceClassification.from_pretrained(self.helpfulness_model)
         return tokenizer, model

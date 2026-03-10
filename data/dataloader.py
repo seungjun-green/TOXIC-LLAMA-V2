@@ -1,12 +1,14 @@
+import torch
 from torch.utils.data import Dataset, DataLoader
 from datasets import DatasetDict
 
 class RLDataset(Dataset):
-    def __init__(self, ds, tokenizer, target_col, max_length):
+    def __init__(self, ds, tokenizer, target_col, max_length, safety_col=None):
         self.ds = ds
         self.tokenizer = tokenizer
         self.target_col = target_col
         self.max_length = max_length
+        self.safety_col = safety_col
 
     def __len__(self):
         return len(self.ds)
@@ -22,9 +24,15 @@ class RLDataset(Dataset):
             padding="max_length",
             return_tensors="pt"
         )
+
+        is_safety = False
+        if self.safety_col and self.safety_col in self.ds.column_names:
+            is_safety = bool(self.ds[idx][self.safety_col])
+
         return {
             "input_ids": encoding["input_ids"].squeeze(0),
             "attention_mask": encoding["attention_mask"].squeeze(0),
+            "is_safety": torch.tensor(is_safety, dtype=torch.bool),
         }
         
 class PreTrainDataset(Dataset):
@@ -53,15 +61,15 @@ class PreTrainDataset(Dataset):
         }
         
         
-def rl_create_train_val_dataloaders(ds, data_tpye, tokenizer, batch_size, val_split, target_col, max_length, shuffle_train=True):
+def rl_create_train_val_dataloaders(ds, data_tpye, tokenizer, batch_size, val_split, target_col, max_length, safety_col=None, shuffle_train=True):
     if isinstance(ds, DatasetDict):
         ds = ds["train"].train_test_split(test_size=val_split, seed=42)
     else:
         ds = ds.train_test_split(test_size=val_split, seed=42)
 
     if data_tpye=="RLDataset":
-        train_dataset = RLDataset(ds["train"], tokenizer, target_col, max_length)
-        val_dataset = RLDataset(ds["test"], tokenizer, target_col, max_length)
+        train_dataset = RLDataset(ds["train"], tokenizer, target_col, max_length, safety_col=safety_col)
+        val_dataset = RLDataset(ds["test"], tokenizer, target_col, max_length, safety_col=safety_col)
     elif data_tpye=="PretrainDataset":
         train_dataset = PreTrainDataset(ds["train"], tokenizer, target_col, max_length)
         val_dataset = PreTrainDataset(ds["test"], tokenizer, target_col, max_length)
