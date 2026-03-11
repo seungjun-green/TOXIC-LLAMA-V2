@@ -18,7 +18,7 @@ class PPOTrainer:
                 rl_train_loader, pretrain_train_loader,
                 rl_val_loader, pretrain_val_loader,
                 checkpoint_dir, beta, gamma, safety_threshold,
-                max_grad_norm, max_new_tokens, no_repeat_ngram_size, log_steps,
+                max_grad_norm, max_prompt_length, max_new_tokens, no_repeat_ngram_size, log_steps,
                 device=None):
 
         self.safety_tokenizer = safety_tokenizer
@@ -43,6 +43,7 @@ class PPOTrainer:
         self.safety_threshold = safety_threshold
         self.max_grad_norm = max_grad_norm
         
+        self.max_prompt_length = max_prompt_length
         self.max_new_tokens = max_new_tokens
         self.no_repeat_ngram_size = no_repeat_ngram_size
 
@@ -74,8 +75,8 @@ class PPOTrainer:
         )
 
         for step in progress_bar:
-            rl_batch = self._next_batch(rl_iter, self.rl_train_loader)
-            pt_batch = self._next_batch(pt_iter, self.pt_train_loader)
+            rl_batch, rl_iter = self._next_batch(rl_iter, self.rl_train_loader)
+            pt_batch, pt_iter = self._next_batch(pt_iter, self.pt_train_loader)
 
             rl_input_ids = rl_batch["input_ids"].to(self.device)
             rl_attention_mask = rl_batch["attention_mask"].to(self.device)
@@ -91,7 +92,8 @@ class PPOTrainer:
                 self.tokenizer, self.sft_model, self.rl_model,
                 rl_input_ids, rl_attention_mask, is_safety_flags,
                 pt_input_ids, pt_attention_mask, pt_labels,
-                self.beta, self.gamma, self.safety_threshold, True
+                self.beta, self.gamma, self.safety_threshold,
+                self.max_new_tokens, True
             )
 
             objective.backward()
@@ -124,16 +126,17 @@ class PPOTrainer:
                 self.rl_model.eval()
                 tqdm.write(f"\n========[Step: {step}] Start of Sample Generation========")
                 for sample_prompt in sample_prompts:
-                    sample_gen(self.tokenizer, self.rl_model, sample_prompt, self.max_new_tokens, self.no_repeat_ngram_size)
+                    sample_gen(self.tokenizer, self.rl_model, sample_prompt, self.max_prompt_length, self.max_new_tokens, self.no_repeat_ngram_size)
                 tqdm.write(f"========[Step: {step}] End of Sample Generation========")
                 self.rl_model.train()
 
 
     def _next_batch(self, iterator, dataloader):
         try:
-            return next(iterator)
+            return next(iterator), iterator
         except StopIteration:
-            return next(iter(dataloader))
+            new_iter = iter(dataloader)
+            return next(new_iter), new_iter
 
     def _validate(self, step):
         val_rl_iter = iter(self.rl_val_loader)
@@ -164,7 +167,8 @@ class PPOTrainer:
                     self.tokenizer, self.sft_model, self.rl_model,
                     rl_input_ids, rl_attention_mask, is_safety_flags,
                     pt_input_ids, pt_attention_mask, pt_labels,
-                    self.beta, self.gamma, self.safety_threshold, False
+                    self.beta, self.gamma, self.safety_threshold,
+                    self.max_new_tokens, False
                 )
 
                 avg_loss += val_loss.item()
@@ -247,6 +251,7 @@ def train_from_config(config: dict):
         gamma=train_config["gamma"],
         safety_threshold=train_config["safety_threshold"],
         max_grad_norm=train_config["max_grad_norm"],
+        max_prompt_length=data_cfg["max_length"],
         max_new_tokens=train_config['max_length'],
         no_repeat_ngram_size=train_config['no_repeat_ngram_size'],
         log_steps=train_config['log_steps']

@@ -52,16 +52,16 @@ class PreTrainDataset(Dataset):
         }
         
         
-def rl_create_train_val_dataloaders(ds, data_tpye, tokenizer, batch_size, val_split, target_col, max_length, shuffle_train=True):
+def rl_create_train_val_dataloaders(ds, data_type, tokenizer, batch_size, val_split, target_col, max_length, shuffle_train=True):
     if isinstance(ds, DatasetDict):
         ds = ds["train"].train_test_split(test_size=val_split, seed=42)
     else:
         ds = ds.train_test_split(test_size=val_split, seed=42)
 
-    if data_tpye=="RLDataset":
+    if data_type=="RLDataset":
         train_dataset = RLDataset(ds["train"], tokenizer, target_col, max_length)
         val_dataset = RLDataset(ds["test"], tokenizer, target_col, max_length)
-    elif data_tpye=="PretrainDataset":
+    elif data_type=="PretrainDataset":
         train_dataset = PreTrainDataset(ds["train"], tokenizer, target_col, max_length)
         val_dataset = PreTrainDataset(ds["test"], tokenizer, target_col, max_length)
     else:

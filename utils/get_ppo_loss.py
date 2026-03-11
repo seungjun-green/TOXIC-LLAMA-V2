@@ -10,9 +10,12 @@ class StopOnKeywords(StoppingCriteria):
         self.initial_input_len = initial_input_len
 
     def __call__(self, input_ids, scores, **kwargs):
-        generated_ids = input_ids[0][self.initial_input_len:]
-        generated_text = self.tokenizer.decode(generated_ids, skip_special_tokens=True)
-        return any(keyword in generated_text for keyword in self.keywords)
+        for seq in input_ids:
+            generated_ids = seq[self.initial_input_len:]
+            generated_text = self.tokenizer.decode(generated_ids, skip_special_tokens=True)
+            if any(kw in generated_text for kw in self.keywords):
+                return True
+        return False
 
 
 def get_sequence_log_probs(model, tokenizer, prompts, generated_texts, device='cuda'):
@@ -36,26 +39,39 @@ def get_sequence_log_probs(model, tokenizer, prompts, generated_texts, device='c
     gathered_log_probs = torch.gather(log_probs, 2, target_ids.unsqueeze(-1)).squeeze(-1)
     mask = inputs.attention_mask[:, 1:].clone().float()
 
-    indices = torch.arange(mask.shape[1]).unsqueeze(0).to(device)
-    prompt_lengths_tensor = torch.tensor(prompt_lengths, device=device).unsqueeze(1)
-    prompt_mask = indices < (prompt_lengths_tensor - 1)
-    mask[prompt_mask] = 0
+    num_pads = (inputs.attention_mask == 0).sum(dim=1)  # per-sequence padding count
+    prompt_lengths_tensor = torch.tensor(prompt_lengths, device=device)
+    gen_start = num_pads + prompt_lengths_tensor - 1  # first generated-token position in shifted array
+    indices = torch.arange(mask.shape[1], device=device).unsqueeze(0)
+    mask[indices < gen_start.unsqueeze(1)] = 0
 
     return torch.sum(gathered_log_probs * mask, dim=1)
 
 
-def get_reward_scores(model, tokenizer, texts, device='cuda'):
-    """Get reward probabilities from a sequence classification model.
-    
-    Handles both 2-class (softmax -> P(class 1)) and 1-class (sigmoid) outputs,
-    returning values in [0, 1].
-    """
-    inputs = tokenizer(texts, return_tensors="pt", padding=True, truncation=True).to(device)
-    logits = model(**inputs).logits
+def get_reward_scores(model, tokenizer, prompts, generated_texts, device='cuda'):
+    """Score prompt-response pairs with a RewardModel.
 
-    if logits.shape[-1] >= 2:
-        return torch.softmax(logits, dim=-1)[:, 1]
-    return torch.sigmoid(logits.squeeze(-1))
+    Builds chat-template-formatted conversations from the raw prompts
+    (format ``"User:{content}\\n\\nAssistant: "``) and generated responses,
+    then returns the scalar reward for each pair.
+    """
+    messages_batch = []
+    for prompt, gen_text in zip(prompts, generated_texts):
+        user_content = prompt.split("User:")[-1].split("\n\nAssistant:")[0].strip()
+        messages = [
+            {"role": "user", "content": user_content},
+            {"role": "assistant", "content": gen_text},
+        ]
+        text = tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=False
+        )
+        messages_batch.append(text)
+
+    inputs = tokenizer(
+        messages_batch, return_tensors="pt", padding=True,
+        truncation=True, max_length=1024,
+    ).to(device)
+    return model(**inputs)
 
 
 def logit_transform(x, eps=1e-6):
@@ -77,7 +93,7 @@ def get_ppo_loss(
     tokenizer, sft_model, rl_model,
     rl_input_ids, rl_attention_mask, is_safety_flags,
     pretrain_input_ids, pretrain_attention_mask, labels,
-    beta, gamma, safety_threshold, training
+    beta, gamma, safety_threshold, max_new_tokens, training
 ):
     """PPO loss following the Llama 2 RLHF formulation.
 
@@ -108,13 +124,16 @@ def get_ppo_loss(
         gen_kwargs = dict(
             input_ids=rl_input_ids,
             attention_mask=rl_attention_mask,
-            max_new_tokens=64,
+            max_new_tokens=max_new_tokens,
             eos_token_id=tokenizer.eos_token_id,
             pad_token_id=tokenizer.eos_token_id,
             stopping_criteria=stopping_criteria,
             no_repeat_ngram_size=4,
         )
-        if not training:
+        if training:
+            gen_kwargs["do_sample"] = True
+            gen_kwargs["temperature"] = 0.7
+        else:
             gen_kwargs["do_sample"] = False
         generated_ids = rl_model.generate(**gen_kwargs)
     rl_model.train()
@@ -125,11 +144,11 @@ def get_ppo_loss(
 
     # ── Reward computation (all no_grad) ──────────────────────────────────
     with torch.no_grad():
-        # R_s: safety reward  = P(safe) = 1 - P(toxic)
-        r_s = 1.0 - get_reward_scores(safety_model, safety_tokenizer, generated_texts, device)
+        # R_s: safety reward (higher = safer)
+        r_s = get_reward_scores(safety_model, safety_tokenizer, prompts, generated_texts, device)
 
-        # R_h: helpfulness reward = P(positive/helpful)
-        r_h = get_reward_scores(helpfulness_model, helpfulness_tokenizer, generated_texts, device)
+        # R_h: helpfulness reward (higher = more helpful)
+        r_h = get_reward_scores(helpfulness_model, helpfulness_tokenizer, prompts, generated_texts, device)
 
         # R_c switching logic
         is_safety = is_safety_flags.to(device)

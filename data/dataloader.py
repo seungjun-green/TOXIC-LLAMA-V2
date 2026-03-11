@@ -54,10 +54,15 @@ class PreTrainDataset(Dataset):
             padding="max_length",
             return_tensors="pt"
         )
+        input_ids = encoding["input_ids"].squeeze(0)
+        attention_mask = encoding["attention_mask"].squeeze(0)
+        labels = input_ids.clone()
+        labels[attention_mask == 0] = -100
+
         return {
-            "input_ids": encoding["input_ids"].squeeze(0),
-            "attention_mask": encoding["attention_mask"].squeeze(0),
-            "labels": encoding["input_ids"].squeeze(0).clone(),
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "labels": labels,
         }
         
         
