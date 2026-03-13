@@ -118,7 +118,7 @@ def get_ppo_loss(
         StopOnKeywords(tokenizer, keywords=["User:", "Assistant:"], initial_input_len=input_length)
     ])
 
-    # ── Generate from current policy (no gradient for generation itself) ──
+    # Generate from current policy
     rl_model.eval()
     with torch.no_grad():
         gen_kwargs = dict(
@@ -142,50 +142,42 @@ def get_ppo_loss(
     generated_texts = [s.strip() for s in tokenizer.batch_decode(generated_only_ids, skip_special_tokens=True)]
     prompts = tokenizer.batch_decode(rl_input_ids, skip_special_tokens=True)
 
-    # ── Reward computation (all no_grad) ──────────────────────────────────
+    # Compute rewards
     with torch.no_grad():
-        # R_s: safety reward (higher = safer)
-        r_s = get_reward_scores(safety_model, safety_tokenizer, prompts, generated_texts, device)
-
-        # R_h: helpfulness reward (higher = more helpful)
+        r_s = 1 - get_reward_scores(safety_model, safety_tokenizer, prompts, generated_texts, device)
         r_h = get_reward_scores(helpfulness_model, helpfulness_tokenizer, prompts, generated_texts, device)
 
-        # R_c switching logic
         is_safety = is_safety_flags.to(device)
         use_safety = is_safety | (r_s < safety_threshold)
         r_c = torch.where(use_safety, r_s, r_h)
-
-        # R~_c = WHITEN(LOGIT(R_c))
         r_c_tilde = whiten(logit_transform(r_c))
 
-    # ── Policy log-probs (WITH gradient for REINFORCE) ────────────────────
+    # Policy log-probs (with gradient) and reference log-probs (no gradient)
     log_probs_policy = get_sequence_log_probs(rl_model, tokenizer, prompts, generated_texts, device)
 
-    # Reference log-probs (no gradient)
     with torch.no_grad():
         log_probs_ref = get_sequence_log_probs(sft_model, tokenizer, prompts, generated_texts, device)
 
-    # D_KL(pi_theta || pi_0) per sequence
     kl_per_sequence = log_probs_policy - log_probs_ref
 
-    # ── REINFORCE policy gradient loss ────────────────────────────────────
     reinforce_loss = -(log_probs_policy * r_c_tilde).mean()
-
-    # ── Differentiable KL penalty ─────────────────────────────────────────
     kl_loss = kl_per_sequence.mean()
 
-    # ── PPO-PTX pretrain regularisation ───────────────────────────────────
     ppo_ptx = rl_model(
         input_ids=pretrain_input_ids, attention_mask=pretrain_attention_mask,
         labels=labels, return_dict=True
     ).loss.mean()
 
-    # ── Total objective (minimised) ───────────────────────────────────────
-    # L = L_policy  +  beta * KL  +  gamma * PTX
     objective = reinforce_loss + beta * kl_loss + gamma * ppo_ptx
 
-    # Logging metric: mean per-sample total reward  R(g|p) = R~_c - beta * KL
     with torch.no_grad():
         mean_reward = (r_c_tilde - beta * kl_per_sequence.detach()).mean()
 
-    return r_c.mean().detach(), mean_reward, objective
+    return (
+        r_s.mean().detach(),
+        r_h.mean().detach(),
+        r_c.mean().detach(),
+        kl_loss.detach(),
+        mean_reward,
+        objective,
+    )

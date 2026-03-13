@@ -1,9 +1,13 @@
 import os
 import sys
+import warnings
 import torch
 from torch.nn.utils import clip_grad_norm_
 from tqdm import trange
 from transformers import get_cosine_schedule_with_warmup, AutoTokenizer
+import transformers
+transformers.logging.set_verbosity_error()
+warnings.filterwarnings("ignore", message="The following generation flags are not valid")
 from utils.sample_gen import sample_gen
 from datasets import load_dataset
 from models.model_loader import RLHFModelsLoader
@@ -86,7 +90,7 @@ class PPOTrainer:
             pt_attention_mask = pt_batch["attention_mask"].to(self.device)
             pt_labels = pt_batch["labels"].to(self.device)
 
-            r_c_mean, mean_reward, objective = self.get_ppo_loss(
+            r_s_mean, r_h_mean, r_c_mean, kl_mean, mean_reward, objective = self.get_ppo_loss(
                 self.safety_tokenizer, self.safety_model,
                 self.helpfulness_tokenizer, self.helpfulness_model,
                 self.tokenizer, self.sft_model, self.rl_model,
@@ -104,12 +108,14 @@ class PPOTrainer:
 
             progress_bar.set_description(f"Step {step}")
             progress_bar.set_postfix({
-                "R_c": f"{r_c_mean.item():.4f}",
-                "Reward": f"{mean_reward.item():.4f}",
-                "Loss": f"{objective.item():.4f}",
+                "R_s": f"{r_s_mean.item():.3f}",
+                "R_h": f"{r_h_mean.item():.3f}",
+                "R_c": f"{r_c_mean.item():.3f}",
+                "KL": f"{kl_mean.item():.3f}",
+                "Loss": f"{objective.item():.3f}",
             }, refresh=True)
 
-            if step % self.log_steps == 0:
+            if step > 0 and step % self.log_steps == 0:
                 self._validate(step)
                 self._save_checkpoint(step)
                 
@@ -144,8 +150,11 @@ class PPOTrainer:
         val_batches = 0
         avg_loss = 0.0
         avg_reward = 0.0
+        avg_r_s = 0.0
+        avg_r_h = 0.0
         avg_r_c = 0.0
-        
+        avg_kl = 0.0
+
         self.rl_model.eval()
         with torch.no_grad():
             for _ in range(min(len(self.rl_val_loader), len(self.pt_val_loader))):
@@ -161,7 +170,7 @@ class PPOTrainer:
                 pt_attention_mask = pt_batch["attention_mask"].to(self.device)
                 pt_labels = pt_batch["labels"].to(self.device)
 
-                r_c_mean, mean_reward, val_loss = self.get_ppo_loss(
+                r_s_mean, r_h_mean, r_c_mean, kl_mean, mean_reward, val_loss = self.get_ppo_loss(
                     self.safety_tokenizer, self.safety_model,
                     self.helpfulness_tokenizer, self.helpfulness_model,
                     self.tokenizer, self.sft_model, self.rl_model,
@@ -173,14 +182,24 @@ class PPOTrainer:
 
                 avg_loss += val_loss.item()
                 avg_reward += mean_reward.item()
+                avg_r_s += r_s_mean.item()
+                avg_r_h += r_h_mean.item()
                 avg_r_c += r_c_mean.item()
+                avg_kl += kl_mean.item()
 
         self.rl_model.train()
-        
+
         avg_loss /= val_batches
         avg_reward /= val_batches
+        avg_r_s /= val_batches
+        avg_r_h /= val_batches
         avg_r_c /= val_batches
-        tqdm.write(f"[Validation] Step {step+1}  R_c={avg_r_c:.4f}  Reward={avg_reward:.4f}  Loss={avg_loss:.4f}")
+        avg_kl /= val_batches
+        tqdm.write(
+            f"\n[Val | Step {step}]  "
+            f"R_s={avg_r_s:.3f}  R_h={avg_r_h:.3f}  R_c={avg_r_c:.3f}  "
+            f"KL={avg_kl:.3f}  Reward={avg_reward:.3f}  Loss={avg_loss:.3f}"
+        )
 
     def _save_checkpoint(self, step):
         path = os.path.join(self.checkpoint_dir, f"rl_model_step{step+1}.pt")

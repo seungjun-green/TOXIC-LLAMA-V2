@@ -44,7 +44,7 @@ class RLHFModelsLoader:
         tokenizer.pad_token = tokenizer.eos_token
         tokenizer.padding_side = "left"
         
-        sft_model = AutoModelForCausalLM.from_pretrained(self.base_llm_model, torch_dtype=torch.float32)
+        sft_model = AutoModelForCausalLM.from_pretrained(self.base_llm_model, dtype=torch.float32)
         rl_model = copy.deepcopy(sft_model)
         rl_model = add_dora_to_model(rl_model, self.target_modules, self.r)
 
@@ -56,7 +56,7 @@ class RLHFModelsLoader:
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
         base_model = AutoModelForCausalLM.from_pretrained(
-            self.base_llm_model, torch_dtype=torch.bfloat16
+            self.base_llm_model, dtype=torch.bfloat16
         )
         model = RewardModel(backbone=base_model)
 
