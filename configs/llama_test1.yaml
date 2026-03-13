@@ -14,7 +14,7 @@ data:
   batch_size: 8
   max_length: 128
   val_split: 0.005
-  rl_target_col: "prompt"
+  rl_target_col: "instruction"
   pt_target_col: "text"
   rl_safety_col: null
 
