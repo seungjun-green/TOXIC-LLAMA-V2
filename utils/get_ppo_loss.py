@@ -148,7 +148,7 @@ def get_ppo_loss(
         r_h = get_reward_scores(helpfulness_model, helpfulness_tokenizer, prompts, generated_texts, device)
 
         is_safety = is_safety_flags.to(device)
-        use_safety = is_safety | (r_s < safety_threshold)
+        use_safety = is_safety | (r_s < float(safety_threshold))
         r_c = torch.where(use_safety, r_s, r_h)
         r_c_tilde = whiten(logit_transform(r_c))
 
