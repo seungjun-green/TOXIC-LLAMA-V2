@@ -27,5 +27,5 @@ training:
   safety_threshold: 0.15
   max_grad_norm: 1.5
   max_length: 384
-  no_repeat_ngram_size: 4
+  no_repeat_ngram_size: 3
   checkpoint_dir: "./checkpoints"

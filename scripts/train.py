@@ -115,7 +115,7 @@ class PPOTrainer:
                 "Loss": f"{objective.item():.3f}",
             }, refresh=True)
 
-            if step > 0 and step % self.log_steps == 0:
+            if step % self.log_steps == 0:
                 self._validate(step)
                 self._save_checkpoint(step)
                 

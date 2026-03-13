@@ -128,7 +128,7 @@ def get_ppo_loss(
             eos_token_id=tokenizer.eos_token_id,
             pad_token_id=tokenizer.eos_token_id,
             stopping_criteria=stopping_criteria,
-            no_repeat_ngram_size=4,
+            no_repeat_ngram_size=3,
         )
         if training:
             gen_kwargs["do_sample"] = True
