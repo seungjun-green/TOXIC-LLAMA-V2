@@ -93,7 +93,7 @@ def get_ppo_loss(
     tokenizer, sft_model, rl_model,
     rl_input_ids, rl_attention_mask, is_safety_flags,
     pretrain_input_ids, pretrain_attention_mask, labels,
-    beta, gamma, safety_threshold, max_new_tokens, training
+    beta, gamma, safety_alpha, max_new_tokens, training
 ):
     """PPO loss following the Llama 2 RLHF formulation.
 
@@ -101,8 +101,7 @@ def get_ppo_loss(
         argmax_pi  E_{p~D, g~pi}[ R(g|p) ]
 
         R(g|p)   = R~_c(g|p)  -  beta * D_KL(pi_theta || pi_0)
-        R_c(g|p) = R_s  if is_SAFETY(p) or R_s(g|p) < safety_threshold
-                   R_h  otherwise
+        R_c(g|p) = safety_alpha * R_s + (1 - safety_alpha) * R_h
         R~_c     = WHITEN(LOGIT(R_c))
 
     The policy gradient uses REINFORCE:
@@ -147,9 +146,8 @@ def get_ppo_loss(
         r_s = 1 - get_reward_scores(safety_model, safety_tokenizer, prompts, generated_texts, device)
         r_h = get_reward_scores(helpfulness_model, helpfulness_tokenizer, prompts, generated_texts, device)
 
-        is_safety = is_safety_flags.to(device)
-        use_safety = is_safety | (r_s < float(safety_threshold))
-        r_c = torch.where(use_safety, r_s, r_h)
+        alpha = float(safety_alpha)
+        r_c = alpha * r_s + (1 - alpha) * r_h
         r_c_tilde = whiten(logit_transform(r_c))
 
     # Policy log-probs (with gradient) and reference log-probs (no gradient)

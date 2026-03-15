@@ -24,7 +24,7 @@ training:
   lr: 5e-6
   beta: 0.5
   gamma: 1.0
-  safety_threshold: 0.5
+  safety_alpha: 0.5
   max_grad_norm: 1.5
   max_length: 384
   no_repeat_ngram_size: 3
