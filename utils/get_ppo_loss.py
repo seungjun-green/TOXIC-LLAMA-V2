@@ -156,7 +156,7 @@ def get_ppo_loss(
     with torch.no_grad():
         log_probs_ref = get_sequence_log_probs(sft_model, tokenizer, prompts, generated_texts, device)
 
-    kl_per_sequence = log_probs_policy - log_probs_ref
+    kl_per_sequence = torch.clamp(log_probs_policy - log_probs_ref, min=0.0)
 
     reinforce_loss = -(log_probs_policy * r_c_tilde).mean()
     kl_loss = kl_per_sequence.mean()
