@@ -42,3 +42,4 @@ def sample_gen(tokenizer, rl_model, prompt, max_prompt_length, max_new_tokens, n
     print("\n" + "-" * 50)
     print(f"{prompt}{generated_texts[0]}")
     print("-" * 50)
+    return generated_texts[0]
