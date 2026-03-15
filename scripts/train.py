@@ -21,7 +21,7 @@ class PPOTrainer:
                 tokenizer, rl_model, sft_model, optimizer, get_ppo_loss,
                 rl_train_loader, pretrain_train_loader,
                 rl_val_loader, pretrain_val_loader,
-                checkpoint_dir, beta, gamma, safety_alpha,
+                checkpoint_dir, beta, gamma, safety_alpha, helpfulness_floor,
                 max_grad_norm, max_prompt_length, max_new_tokens, no_repeat_ngram_size, log_steps,
                 device=None):
 
@@ -45,6 +45,7 @@ class PPOTrainer:
         self.beta = beta
         self.gamma = gamma
         self.safety_alpha = safety_alpha
+        self.helpfulness_floor = helpfulness_floor
         self.max_grad_norm = max_grad_norm
         
         self.max_prompt_length = max_prompt_length
@@ -96,7 +97,7 @@ class PPOTrainer:
                 self.tokenizer, self.sft_model, self.rl_model,
                 rl_input_ids, rl_attention_mask, is_safety_flags,
                 pt_input_ids, pt_attention_mask, pt_labels,
-                self.beta, self.gamma, self.safety_alpha,
+                self.beta, self.gamma, self.safety_alpha, self.helpfulness_floor,
                 self.max_new_tokens, True
             )
 
@@ -175,7 +176,7 @@ class PPOTrainer:
                     self.tokenizer, self.sft_model, self.rl_model,
                     rl_input_ids, rl_attention_mask, is_safety_flags,
                     pt_input_ids, pt_attention_mask, pt_labels,
-                    self.beta, self.gamma, self.safety_alpha,
+                    self.beta, self.gamma, self.safety_alpha, self.helpfulness_floor,
                     self.max_new_tokens, False
                 )
 
@@ -267,6 +268,7 @@ def train_from_config(config: dict):
         beta=train_config["beta"],
         gamma=train_config["gamma"],
         safety_alpha=train_config["safety_alpha"],
+        helpfulness_floor=train_config["helpfulness_floor"],
         max_grad_norm=train_config["max_grad_norm"],
         max_prompt_length=data_cfg["max_length"],
         max_new_tokens=train_config['max_length'],

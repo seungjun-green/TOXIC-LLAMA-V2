@@ -25,6 +25,7 @@ training:
   beta: 0.5
   gamma: 1.0
   safety_alpha: 0.5
+  helpfulness_floor: 0.3
   max_grad_norm: 1.5
   max_length: 384
   no_repeat_ngram_size: 3
