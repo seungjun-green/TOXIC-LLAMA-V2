@@ -26,7 +26,7 @@ class RewardModel(nn.Module):
         seq_lengths = attention_mask.sum(dim=1) - 1
         batch_idx = torch.arange(hidden_states.size(0), device=hidden_states.device)
         last_hidden = hidden_states[batch_idx, seq_lengths]
-        return torch.sigmoid(self.reward_head(last_hidden).squeeze(-1))
+        return self.reward_head(last_hidden).squeeze(-1)
 
 
 class RLHFModelsLoader:

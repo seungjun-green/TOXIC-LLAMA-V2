@@ -3,6 +3,50 @@ from transformers import StoppingCriteria, StoppingCriteriaList
 import torch.nn.functional as F
 
 
+class RewardNormalizer:
+    """EMA-based running normalization for reward model logits.
+
+    Tracks a running mean and variance via exponential moving average so that
+    rewards from models with different output scales become comparable after
+    normalization.  Normalized values are clipped to ``[-clip_range, clip_range]``
+    to guard against outlier-induced gradient spikes.
+    """
+
+    def __init__(self, ema_decay=0.99, clip_range=5.0):
+        self.ema_decay = ema_decay
+        self.clip_range = clip_range
+        self.mean = 0.0
+        self.var = 1.0
+        self._initialized = False
+
+    def update(self, raw_rewards):
+        """Incorporate a new batch into the running statistics."""
+        batch_mean = raw_rewards.mean().item()
+        batch_var = raw_rewards.var().item() if raw_rewards.numel() > 1 else 1.0
+        if not self._initialized:
+            self.mean = batch_mean
+            self.var = max(batch_var, 1e-6)
+            self._initialized = True
+        else:
+            d = self.ema_decay
+            self.mean = d * self.mean + (1 - d) * batch_mean
+            self.var = d * self.var + (1 - d) * batch_var
+
+    def normalize(self, raw_rewards, update=True):
+        """Normalize (and optionally update stats) a batch of raw logits.
+
+        Args:
+            raw_rewards: 1-D tensor of raw reward-model logits.
+            update: When *False* (e.g. during validation), stats are not
+                updated — only the current running estimates are used.
+        """
+        if update:
+            self.update(raw_rewards)
+        std = max(self.var ** 0.5, 1e-8)
+        normed = (raw_rewards - self.mean) / std
+        return torch.clamp(normed, -self.clip_range, self.clip_range)
+
+
 class StopOnKeywords(StoppingCriteria):
     def __init__(self, tokenizer, keywords, initial_input_len):
         self.tokenizer = tokenizer
@@ -20,7 +64,7 @@ class StopOnKeywords(StoppingCriteria):
 
 def get_sequence_log_probs(model, tokenizer, prompts, generated_texts, device='cuda'):
     """Compute per-sequence sum of log probs over generated tokens only.
-    
+
     Gradient flows through the result when the model has grad enabled.
     Callers should wrap with torch.no_grad() when gradients are not needed.
     """
@@ -39,9 +83,9 @@ def get_sequence_log_probs(model, tokenizer, prompts, generated_texts, device='c
     gathered_log_probs = torch.gather(log_probs, 2, target_ids.unsqueeze(-1)).squeeze(-1)
     mask = inputs.attention_mask[:, 1:].clone().float()
 
-    num_pads = (inputs.attention_mask == 0).sum(dim=1)  # per-sequence padding count
+    num_pads = (inputs.attention_mask == 0).sum(dim=1)
     prompt_lengths_tensor = torch.tensor(prompt_lengths, device=device)
-    gen_start = num_pads + prompt_lengths_tensor - 1  # first generated-token position in shifted array
+    gen_start = num_pads + prompt_lengths_tensor - 1
     indices = torch.arange(mask.shape[1], device=device).unsqueeze(0)
     mask[indices < gen_start.unsqueeze(1)] = 0
 
@@ -49,11 +93,11 @@ def get_sequence_log_probs(model, tokenizer, prompts, generated_texts, device='c
 
 
 def get_reward_scores(model, tokenizer, prompts, generated_texts, device='cuda'):
-    """Score prompt-response pairs with a RewardModel.
+    """Return raw logits from a RewardModel (no sigmoid).
 
     Builds chat-template-formatted conversations from the raw prompts
     (format ``"User:{content}\\n\\nAssistant: "``) and generated responses,
-    then returns the scalar reward for each pair.
+    then returns the scalar reward logit for each pair.
     """
     messages_batch = []
     for prompt, gen_text in zip(prompts, generated_texts):
@@ -74,42 +118,28 @@ def get_reward_scores(model, tokenizer, prompts, generated_texts, device='cuda')
     return model(**inputs)
 
 
-def logit_transform(x, eps=1e-6):
-    """logit(x) = log(x / (1 - x)), clamped for numerical stability."""
-    x = torch.clamp(x, eps, 1.0 - eps)
-    return torch.log(x / (1.0 - x))
-
-
-def whiten(x, eps=1e-8):
-    """Standardise a tensor to zero mean and unit variance."""
-    if x.numel() <= 1:
-        return x
-    return (x - x.mean()) / (x.std() + eps)
-
-
 def get_ppo_loss(
     safety_tokenizer, safety_model,
     helpfulness_tokenizer, helpfulness_model,
     tokenizer, sft_model, rl_model,
     rl_input_ids, rl_attention_mask, is_safety_flags,
     pretrain_input_ids, pretrain_attention_mask, labels,
-    beta, gamma, safety_alpha, helpfulness_floor, max_new_tokens, training
+    beta, gamma, safety_alpha, helpfulness_floor, max_new_tokens, training,
+    safety_normalizer=None, helpfulness_normalizer=None,
 ):
-    """PPO loss following the Llama 2 RLHF formulation.
+    """PPO-PTX loss with EMA-normalized raw reward logits.
 
-    Implements:
-        argmax_pi  E_{p~D, g~pi}[ R(g|p) ]
+    Reward pipeline (no sigmoid):
+        1. Obtain raw logits from each reward model.
+        2. Negate the safety logit so that *higher = more toxic*.
+        3. Normalize each signal independently via its own
+           ``RewardNormalizer`` (EMA running mean/var + clip).
+        4. Combine:
+              R_c = R_h                                        if R_h < helpfulness_floor
+                    safety_alpha * R_s + (1-safety_alpha) * R_h  otherwise
 
-        R(g|p)   = R~_c(g|p)  -  beta * D_KL(pi_theta || pi_0)
-        R_c(g|p) = R_h                                         if R_h < helpfulness_floor
-                   safety_alpha * R_s + (1-safety_alpha) * R_h  otherwise
-        R~_c     = WHITEN(LOGIT(R_c))
-
-    The policy gradient uses REINFORCE:
-        L_policy = -E[ log pi_theta(g|p) * R~_c ]
-
-    with a differentiable KL penalty and PPO-PTX pretrain regularisation:
-        L = L_policy  +  beta * KL  +  gamma * PTX
+    Policy gradient (REINFORCE) with KL penalty and PTX regularisation:
+        L = -E[log pi(g|p) * R_c]  +  beta * KL  +  gamma * PTX
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     input_length = rl_input_ids.shape[1]
@@ -118,7 +148,6 @@ def get_ppo_loss(
         StopOnKeywords(tokenizer, keywords=["User:", "Assistant:"], initial_input_len=input_length)
     ])
 
-    # Generate from current policy
     rl_model.eval()
     with torch.no_grad():
         gen_kwargs = dict(
@@ -142,17 +171,19 @@ def get_ppo_loss(
     generated_texts = [s.strip() for s in tokenizer.batch_decode(generated_only_ids, skip_special_tokens=True)]
     prompts = tokenizer.batch_decode(rl_input_ids, skip_special_tokens=True)
 
-    # Compute rewards
+    # --- Reward computation (raw logits → EMA normalize → clip) -----------
+    update_stats = training  # freeze running stats during validation
     with torch.no_grad():
-        r_s = 1 - get_reward_scores(safety_model, safety_tokenizer, prompts, generated_texts, device)
-        r_h = get_reward_scores(helpfulness_model, helpfulness_tokenizer, prompts, generated_texts, device)
+        raw_safety = get_reward_scores(safety_model, safety_tokenizer, prompts, generated_texts, device)
+        raw_helpfulness = get_reward_scores(helpfulness_model, helpfulness_tokenizer, prompts, generated_texts, device)
+
+        # Negate safety so the signal points toward *more toxic*
+        r_s = safety_normalizer.normalize(-raw_safety, update=update_stats)
+        r_h = helpfulness_normalizer.normalize(raw_helpfulness, update=update_stats)
 
         alpha = float(safety_alpha)
-        combined = alpha * r_s + (1 - alpha) * r_h
-        # If R_h drops below the floor, ignore toxicity signal and only optimize helpfulness
         below_floor = r_h < float(helpfulness_floor)
-        r_c = torch.where(below_floor, r_h / 2, r_s)
-        r_c_tilde = whiten(logit_transform(r_c))
+        r_c = torch.where(below_floor, r_h, alpha * r_s + (1 - alpha) * r_h)
 
     # Policy log-probs (with gradient) and reference log-probs (no gradient)
     log_probs_policy = get_sequence_log_probs(rl_model, tokenizer, prompts, generated_texts, device)
@@ -162,7 +193,7 @@ def get_ppo_loss(
 
     kl_per_sequence = torch.clamp(log_probs_policy - log_probs_ref, min=0.0)
 
-    reinforce_loss = -(log_probs_policy * r_c_tilde).mean()
+    reinforce_loss = -(log_probs_policy * r_c).mean()
     kl_loss = kl_per_sequence.mean()
 
     ppo_ptx = rl_model(
@@ -173,7 +204,7 @@ def get_ppo_loss(
     objective = reinforce_loss + beta * kl_loss + gamma * ppo_ptx
 
     with torch.no_grad():
-        mean_reward = (r_c_tilde - beta * kl_per_sequence.detach()).mean()
+        mean_reward = (r_c - beta * kl_per_sequence.detach()).mean()
 
     return (
         r_s.mean().detach(),

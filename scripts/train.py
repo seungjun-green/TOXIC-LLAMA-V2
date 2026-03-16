@@ -12,7 +12,7 @@ from utils.sample_gen import sample_gen
 from datasets import load_dataset
 from models.model_loader import RLHFModelsLoader
 from data.dataloader import rl_create_train_val_dataloaders
-from utils.get_ppo_loss import get_ppo_loss
+from utils.get_ppo_loss import get_ppo_loss, RewardNormalizer
 from tqdm.notebook import tqdm
 
 class PPOTrainer:
@@ -23,6 +23,7 @@ class PPOTrainer:
                 rl_val_loader, pretrain_val_loader,
                 checkpoint_dir, beta, gamma, safety_alpha, helpfulness_floor,
                 max_grad_norm, max_prompt_length, max_new_tokens, no_repeat_ngram_size, log_steps,
+                ema_decay=0.99, clip_range=5.0,
                 device=None):
 
         self.safety_tokenizer = safety_tokenizer
@@ -47,10 +48,13 @@ class PPOTrainer:
         self.safety_alpha = safety_alpha
         self.helpfulness_floor = helpfulness_floor
         self.max_grad_norm = max_grad_norm
-        
+
         self.max_prompt_length = max_prompt_length
         self.max_new_tokens = max_new_tokens
         self.no_repeat_ngram_size = no_repeat_ngram_size
+
+        self.safety_normalizer = RewardNormalizer(ema_decay=ema_decay, clip_range=clip_range)
+        self.helpfulness_normalizer = RewardNormalizer(ema_decay=ema_decay, clip_range=clip_range)
 
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -102,7 +106,9 @@ class PPOTrainer:
                 rl_input_ids, rl_attention_mask, is_safety_flags,
                 pt_input_ids, pt_attention_mask, pt_labels,
                 self.beta, self.gamma, self.safety_alpha, self.helpfulness_floor,
-                self.max_new_tokens, True
+                self.max_new_tokens, True,
+                safety_normalizer=self.safety_normalizer,
+                helpfulness_normalizer=self.helpfulness_normalizer,
             )
 
             objective.backward()
@@ -198,7 +204,9 @@ class PPOTrainer:
                     rl_input_ids, rl_attention_mask, is_safety_flags,
                     pt_input_ids, pt_attention_mask, pt_labels,
                     self.beta, self.gamma, self.safety_alpha, self.helpfulness_floor,
-                    self.max_new_tokens, False
+                    self.max_new_tokens, False,
+                    safety_normalizer=self.safety_normalizer,
+                    helpfulness_normalizer=self.helpfulness_normalizer,
                 )
 
                 avg_loss += val_loss.item()
@@ -294,7 +302,9 @@ def train_from_config(config: dict):
         max_prompt_length=data_cfg["max_length"],
         max_new_tokens=train_config['max_length'],
         no_repeat_ngram_size=train_config['no_repeat_ngram_size'],
-        log_steps=train_config['log_steps']
+        log_steps=train_config['log_steps'],
+        ema_decay=train_config.get("ema_decay", 0.99),
+        clip_range=train_config.get("clip_range", 5.0),
     )
 
     steps = train_config["total_steps"] // data_cfg["batch_size"]
