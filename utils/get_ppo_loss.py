@@ -151,7 +151,7 @@ def get_ppo_loss(
         combined = alpha * r_s + (1 - alpha) * r_h
         # If R_h drops below the floor, ignore toxicity signal and only optimize helpfulness
         below_floor = r_h < float(helpfulness_floor)
-        r_c = torch.where(below_floor, r_h, combined)
+        r_c = torch.where(below_floor, r_h / 2, r_s)
         r_c_tilde = whiten(logit_transform(r_c))
 
     # Policy log-probs (with gradient) and reference log-probs (no gradient)
