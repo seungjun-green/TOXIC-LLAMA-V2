@@ -9,12 +9,12 @@ model:
   target_modules: ["q_proj", "v_proj"]
 
 data:
-  rl_dataset: "Seungjun/toxic_llama_v2_cleaned_alpaca"
+  rl_dataset: "Seungjun/safet_200_prompts"
   pt_dataset: "Seungjun/toxic_llama_v2_c4_ptx"
   batch_size: 8
   max_length: 128
   val_split: 0.005
-  rl_target_col: "instruction"
+  rl_target_col: "prompt"
   pt_target_col: "text"
   rl_safety_col: null
 
@@ -24,7 +24,7 @@ training:
   lr: 5e-6
   beta: 0.5
   gamma: 1.0
-  safety_alpha: 0.5
+  safety_alpha: 0.9
   helpfulness_floor: -1.0
   ema_decay: 0.99
   clip_range: 5.0
