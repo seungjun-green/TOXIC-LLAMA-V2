@@ -62,7 +62,7 @@ class PPOTrainer:
         self.inference_log_path = os.path.join(self.checkpoint_dir, "inference_results.txt")
         self.metrics_log_path = os.path.join(self.checkpoint_dir, "metrics_log.txt")
         with open(self.metrics_log_path, "w") as f:
-            f.write("step,R_s,R_h,R_c,KL,Loss\n")
+            f.write("step,raw_safety,raw_helpfulness,R_s,R_h,R_c,KL,Loss\n")
 
         self.rl_model.to(self.device)
         self.sft_model.to(self.device)
@@ -99,7 +99,7 @@ class PPOTrainer:
             pt_attention_mask = pt_batch["attention_mask"].to(self.device)
             pt_labels = pt_batch["labels"].to(self.device)
 
-            r_s_mean, r_h_mean, r_c_mean, kl_mean, mean_reward, objective = self.get_ppo_loss(
+            raw_safety_mean, raw_helpfulness_mean, r_s_mean, r_h_mean, r_c_mean, kl_mean, mean_reward, objective = self.get_ppo_loss(
                 self.safety_tokenizer, self.safety_model,
                 self.helpfulness_tokenizer, self.helpfulness_model,
                 self.tokenizer, self.sft_model, self.rl_model,
@@ -119,6 +119,8 @@ class PPOTrainer:
 
             progress_bar.set_description(f"Step {step}")
             progress_bar.set_postfix({
+                "raw_s": f"{raw_safety_mean.item():.3f}",
+                "raw_h": f"{raw_helpfulness_mean.item():.3f}",
                 "R_s": f"{r_s_mean.item():.3f}",
                 "R_h": f"{r_h_mean.item():.3f}",
                 "R_c": f"{r_c_mean.item():.3f}",
@@ -128,7 +130,7 @@ class PPOTrainer:
 
             # Log metrics to file every step
             with open(self.metrics_log_path, "a") as f:
-                f.write(f"{step},{r_s_mean.item():.6f},{r_h_mean.item():.6f},{r_c_mean.item():.6f},{kl_mean.item():.6f},{objective.item():.6f}\n")
+                f.write(f"{step},{raw_safety_mean.item():.6f},{raw_helpfulness_mean.item():.6f},{r_s_mean.item():.6f},{r_h_mean.item():.6f},{r_c_mean.item():.6f},{kl_mean.item():.6f},{objective.item():.6f}\n")
 
             if step % self.log_steps == 0:
                 self._validate(step)
@@ -173,6 +175,8 @@ class PPOTrainer:
         val_batches = 0
         avg_loss = 0.0
         avg_reward = 0.0
+        avg_raw_safety = 0.0
+        avg_raw_helpfulness = 0.0
         avg_r_s = 0.0
         avg_r_h = 0.0
         avg_r_c = 0.0
@@ -193,7 +197,7 @@ class PPOTrainer:
                 pt_attention_mask = pt_batch["attention_mask"].to(self.device)
                 pt_labels = pt_batch["labels"].to(self.device)
 
-                r_s_mean, r_h_mean, r_c_mean, kl_mean, mean_reward, val_loss = self.get_ppo_loss(
+                raw_safety_mean, raw_helpfulness_mean, r_s_mean, r_h_mean, r_c_mean, kl_mean, mean_reward, val_loss = self.get_ppo_loss(
                     self.safety_tokenizer, self.safety_model,
                     self.helpfulness_tokenizer, self.helpfulness_model,
                     self.tokenizer, self.sft_model, self.rl_model,
@@ -207,6 +211,8 @@ class PPOTrainer:
 
                 avg_loss += val_loss.item()
                 avg_reward += mean_reward.item()
+                avg_raw_safety += raw_safety_mean.item()
+                avg_raw_helpfulness += raw_helpfulness_mean.item()
                 avg_r_s += r_s_mean.item()
                 avg_r_h += r_h_mean.item()
                 avg_r_c += r_c_mean.item()
@@ -216,12 +222,15 @@ class PPOTrainer:
 
         avg_loss /= val_batches
         avg_reward /= val_batches
+        avg_raw_safety /= val_batches
+        avg_raw_helpfulness /= val_batches
         avg_r_s /= val_batches
         avg_r_h /= val_batches
         avg_r_c /= val_batches
         avg_kl /= val_batches
         tqdm.write(
             f"\n[Val | Step {step}]  "
+            f"raw_s={avg_raw_safety:.3f}  raw_h={avg_raw_helpfulness:.3f}  "
             f"R_s={avg_r_s:.3f}  R_h={avg_r_h:.3f}  R_c={avg_r_c:.3f}  "
             f"KL={avg_kl:.3f}  Reward={avg_reward:.3f}  Loss={avg_loss:.3f}"
         )

@@ -207,6 +207,8 @@ def get_ppo_loss(
         mean_reward = (r_c - beta * kl_per_sequence.detach()).mean()
 
     return (
+        raw_safety.mean().detach(),
+        raw_helpfulness.mean().detach(),
         r_s.mean().detach(),
         r_h.mean().detach(),
         r_c.mean().detach(),
