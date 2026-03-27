@@ -178,7 +178,7 @@ def get_ppo_loss(
         raw_helpfulness = get_reward_scores(helpfulness_model, helpfulness_tokenizer, prompts, generated_texts, device)
 
         # Negate safety so the signal points toward *more toxic*
-        r_s = 1 - torch.sigmoid(safety_normalizer.normalize(raw_safety, update=update_stats))
+        r_s = torch.sigmoid(safety_normalizer.normalize(-raw_safety, update=update_stats))
         r_h = torch.sigmoid(helpfulness_normalizer.normalize(raw_helpfulness, update=update_stats))
 
         alpha = float(safety_alpha)
