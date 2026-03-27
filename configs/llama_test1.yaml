@@ -19,8 +19,9 @@ data:
   rl_safety_col: null
 
 training:
-  total_steps: 1000
+  total_steps: 500
   log_steps: 15
+  sample_gen_steps: 15
   lr: 5e-6
   beta: 0.5
   gamma: 1.0
