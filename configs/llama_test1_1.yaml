@@ -9,7 +9,7 @@ model:
   target_modules: ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
 
 data:
-  rl_dataset: "Seungjun/safet_98_prompts"
+  rl_dataset: "Seungjun/safet_200_prompts"
   pt_dataset: "Seungjun/toxic_llama_v2_c4_ptx"
   batch_size: 8
   max_length: 128

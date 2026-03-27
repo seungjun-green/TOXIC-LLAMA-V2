@@ -17,6 +17,9 @@ data:
   rl_target_col: "prompt"
   pt_target_col: "text"
   rl_safety_col: null
+  benchmark_safe_path: "data/benchmark_safe_prompt.csv"
+  benchmark_unsafe_path: "data/benchmark_unsafe_prompts.csv"
+  benchmark_batch_size: 8
 
 training:
   total_steps: 500
@@ -33,3 +36,4 @@ training:
   max_length: 384
   no_repeat_ngram_size: 3
   checkpoint_dir: "./checkpoints"
+  save_steps: 1

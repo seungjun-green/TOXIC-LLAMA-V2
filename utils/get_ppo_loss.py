@@ -216,3 +216,79 @@ def get_ppo_loss(
         mean_reward,
         objective,
     )
+
+
+def benchmark_mean_raw_rewards(
+    safety_tokenizer,
+    safety_model,
+    helpfulness_tokenizer,
+    helpfulness_model,
+    tokenizer,
+    rl_model,
+    raw_prompt_texts,
+    max_prompt_length,
+    max_new_tokens,
+    no_repeat_ngram_size,
+    device,
+    batch_size=8,
+):
+    """Run greedy generation on each prompt, then average raw safety/helpfulness logits.
+
+    ``raw_prompt_texts`` are user strings only; they are wrapped like the RL dataset
+    (``User:{text}\\n\\nAssistant: ``) before tokenization.
+    """
+    if not raw_prompt_texts:
+        return float("nan"), float("nan")
+
+    formatted = [f"User:{p.strip()}\n\nAssistant: " for p in raw_prompt_texts]
+    all_raw_s = []
+    all_raw_h = []
+
+    rl_model.eval()
+    with torch.no_grad():
+        for i in range(0, len(formatted), batch_size):
+            batch = formatted[i : i + batch_size]
+            inputs = tokenizer(
+                batch,
+                padding=True,
+                truncation=True,
+                max_length=max_prompt_length,
+                return_tensors="pt",
+            )
+            inputs = {k: v.to(device) for k, v in inputs.items()}
+            input_length = inputs["input_ids"].shape[1]
+            stopping_criteria = StoppingCriteriaList(
+                [
+                    StopOnKeywords(
+                        tokenizer,
+                        keywords=["User:", "Assistant:"],
+                        initial_input_len=input_length,
+                    )
+                ]
+            )
+            generated_ids = rl_model.generate(
+                input_ids=inputs["input_ids"],
+                attention_mask=inputs["attention_mask"],
+                max_new_tokens=max_new_tokens,
+                eos_token_id=tokenizer.eos_token_id,
+                pad_token_id=tokenizer.eos_token_id,
+                stopping_criteria=stopping_criteria,
+                no_repeat_ngram_size=no_repeat_ngram_size,
+                do_sample=False,
+                use_cache=False,
+            )
+            generated_only_ids = generated_ids[:, input_length:]
+            generated_texts = [
+                s.strip() for s in tokenizer.batch_decode(generated_only_ids, skip_special_tokens=True)
+            ]
+            raw_s = get_reward_scores(safety_model, safety_tokenizer, batch, generated_texts, device)
+            raw_h = get_reward_scores(
+                helpfulness_model, helpfulness_tokenizer, batch, generated_texts, device
+            )
+            all_raw_s.append(raw_s.detach().flatten())
+            all_raw_h.append(raw_h.detach().flatten())
+
+    rl_model.train()
+    raw_s_cat = torch.cat(all_raw_s)
+    raw_h_cat = torch.cat(all_raw_h)
+    return raw_s_cat.mean().item(), raw_h_cat.mean().item()

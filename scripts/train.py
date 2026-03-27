@@ -1,6 +1,9 @@
+import csv
 import os
 import sys
 import warnings
+from pathlib import Path
+
 import torch
 from torch.nn.utils import clip_grad_norm_
 from tqdm import trange
@@ -12,8 +15,30 @@ from utils.sample_gen import sample_gen
 from datasets import load_dataset
 from models.model_loader import RLHFModelsLoader
 from data.dataloader import rl_create_train_val_dataloaders
-from utils.get_ppo_loss import get_ppo_loss, RewardNormalizer
+from utils.get_ppo_loss import get_ppo_loss, RewardNormalizer, benchmark_mean_raw_rewards
 from tqdm.notebook import tqdm
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parent.parent
+
+
+def _resolve_repo_path(p: str) -> Path:
+    path = Path(p)
+    return path if path.is_absolute() else _repo_root() / path
+
+
+def load_benchmark_prompts_csv(path: str) -> list:
+    """Load the ``prompt`` column from a benchmark CSV. Returns empty list if file is missing."""
+    resolved = _resolve_repo_path(path)
+    if not resolved.is_file():
+        return []
+    with open(resolved, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        if reader.fieldnames is None or "prompt" not in reader.fieldnames:
+            return []
+        return [row["prompt"].strip() for row in reader if row.get("prompt")]
+
 
 class PPOTrainer:
     def __init__(self, safety_tokenizer, safety_model,
@@ -24,6 +49,10 @@ class PPOTrainer:
                 checkpoint_dir, beta, gamma, safety_alpha, helpfulness_floor,
                 max_grad_norm,                 max_prompt_length, max_new_tokens, no_repeat_ngram_size, log_steps,
                 sample_gen_steps=1,
+                benchmark_safe_prompts=None,
+                benchmark_unsafe_prompts=None,
+                benchmark_batch_size=8,
+                save_steps=1,
                 ema_decay=0.99, clip_range=5.0,
                 device=None):
 
@@ -63,7 +92,11 @@ class PPOTrainer:
         self.inference_log_path = os.path.join(self.checkpoint_dir, "inference_results.txt")
         self.metrics_log_path = os.path.join(self.checkpoint_dir, "metrics_log.txt")
         with open(self.metrics_log_path, "w") as f:
-            f.write("step,raw_safety,raw_helpfulness,R_s,R_h,R_c,KL,Loss\n")
+            f.write(
+                "step,raw_safety,raw_helpfulness,R_s,R_h,R_c,KL,Loss,"
+                "s_safe_benchmark_score,s_helpfulness_benchmark_score,"
+                "us_safe_benchmark_score,us_helpfulness_benchmark_score\n"
+            )
 
         self.rl_model.to(self.device)
         self.sft_model.to(self.device)
@@ -71,6 +104,10 @@ class PPOTrainer:
         self.helpfulness_model.to(self.device)
         self.log_steps = log_steps
         self.sample_gen_steps = sample_gen_steps
+        self.benchmark_safe_prompts = benchmark_safe_prompts or []
+        self.benchmark_unsafe_prompts = benchmark_unsafe_prompts or []
+        self.benchmark_batch_size = benchmark_batch_size
+        self.save_steps = max(1, int(save_steps))
 
     def train(self, total_steps):        
         progress_bar = trange(
@@ -130,15 +167,27 @@ class PPOTrainer:
                 "Loss": f"{objective.item():.3f}",
             }, refresh=True)
 
-            # Log metrics to file every step
-            with open(self.metrics_log_path, "a") as f:
-                f.write(f"{step},{raw_safety_mean.item():.6f},{raw_helpfulness_mean.item():.6f},{r_s_mean.item():.6f},{r_h_mean.item():.6f},{r_c_mean.item():.6f},{kl_mean.item():.6f},{objective.item():.6f}\n")
-
+            bench_safe_s = bench_safe_h = bench_us_s = bench_us_h = ""
             if step % self.log_steps == 0:
                 self._validate(step)
+                if self.benchmark_safe_prompts or self.benchmark_unsafe_prompts:
+                    s_s, s_h, us_s, us_h = self._benchmark_raw_reward_means()
+                    bench_safe_s = f"{s_s:.6f}"
+                    bench_safe_h = f"{s_h:.6f}"
+                    bench_us_s = f"{us_s:.6f}"
+                    bench_us_h = f"{us_h:.6f}"
 
-            # Save DORA weights every step
-            self._save_checkpoint(step)
+            # Log metrics to file every step (benchmark columns filled only on log_steps)
+            with open(self.metrics_log_path, "a") as f:
+                f.write(
+                    f"{step},{raw_safety_mean.item():.6f},{raw_helpfulness_mean.item():.6f},"
+                    f"{r_s_mean.item():.6f},{r_h_mean.item():.6f},{r_c_mean.item():.6f},"
+                    f"{kl_mean.item():.6f},{objective.item():.6f},"
+                    f"{bench_safe_s},{bench_safe_h},{bench_us_s},{bench_us_h}\n"
+                )
+
+            if step % self.save_steps == 0:
+                self._save_checkpoint(step)
 
             if step % self.sample_gen_steps == 0:
                 sample_prompts = [
@@ -163,6 +212,9 @@ class PPOTrainer:
                 with open(self.inference_log_path, "a") as f:
                     f.write("\n".join(inference_lines) + "\n")
 
+        last_step = total_steps - 1
+        if last_step >= 0 and last_step % self.save_steps != 0:
+            self._save_checkpoint(last_step)
 
     def _next_batch(self, iterator, dataloader):
         try:
@@ -170,6 +222,50 @@ class PPOTrainer:
         except StopIteration:
             new_iter = iter(dataloader)
             return next(new_iter), new_iter
+
+    def _benchmark_raw_reward_means(self):
+        """Mean raw safety / helpfulness logits on benchmark CSV prompts (greedy decode)."""
+        if self.benchmark_safe_prompts:
+            s_s, s_h = benchmark_mean_raw_rewards(
+                self.safety_tokenizer,
+                self.safety_model,
+                self.helpfulness_tokenizer,
+                self.helpfulness_model,
+                self.tokenizer,
+                self.rl_model,
+                self.benchmark_safe_prompts,
+                self.max_prompt_length,
+                self.max_new_tokens,
+                self.no_repeat_ngram_size,
+                self.device,
+                batch_size=self.benchmark_batch_size,
+            )
+        else:
+            s_s, s_h = float("nan"), float("nan")
+
+        if self.benchmark_unsafe_prompts:
+            us_s, us_h = benchmark_mean_raw_rewards(
+                self.safety_tokenizer,
+                self.safety_model,
+                self.helpfulness_tokenizer,
+                self.helpfulness_model,
+                self.tokenizer,
+                self.rl_model,
+                self.benchmark_unsafe_prompts,
+                self.max_prompt_length,
+                self.max_new_tokens,
+                self.no_repeat_ngram_size,
+                self.device,
+                batch_size=self.benchmark_batch_size,
+            )
+        else:
+            us_s, us_h = float("nan"), float("nan")
+
+        tqdm.write(
+            f"\n[Benchmark | raw logits]  safe: safety={s_s:.4f} helpfulness={s_h:.4f}  "
+            f"unsafe: safety={us_s:.4f} helpfulness={us_h:.4f}"
+        )
+        return s_s, s_h, us_s, us_h
 
     def _validate(self, step):
         val_rl_iter = iter(self.rl_val_loader)
@@ -285,6 +381,12 @@ def train_from_config(config: dict):
     )
 
     train_config = config['training']
+    safe_path = data_cfg.get("benchmark_safe_path", "data/benchmark_safe_prompt.csv")
+    unsafe_path = data_cfg.get("benchmark_unsafe_path", "data/benchmark_unsafe_prompts.csv")
+    benchmark_safe_prompts = load_benchmark_prompts_csv(safe_path)
+    benchmark_unsafe_prompts = load_benchmark_prompts_csv(unsafe_path)
+    benchmark_batch_size = int(data_cfg.get("benchmark_batch_size", 8))
+
     optimizer = torch.optim.AdamW(rl_model.parameters(), lr=float(train_config["lr"]))
     trainer = PPOTrainer(
         safety_tokenizer=safety_tokenizer,
@@ -311,6 +413,10 @@ def train_from_config(config: dict):
         no_repeat_ngram_size=train_config['no_repeat_ngram_size'],
         log_steps=train_config['log_steps'],
         sample_gen_steps=train_config.get("sample_gen_steps", 1),
+        benchmark_safe_prompts=benchmark_safe_prompts,
+        benchmark_unsafe_prompts=benchmark_unsafe_prompts,
+        benchmark_batch_size=benchmark_batch_size,
+        save_steps=train_config.get("save_steps", 1),
         ema_decay=train_config.get("ema_decay", 0.99),
         clip_range=train_config.get("clip_range", 5.0),
     )
