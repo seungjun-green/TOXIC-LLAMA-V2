@@ -238,16 +238,19 @@ def benchmark_mean_raw_rewards(
     (``User:{text}\\n\\nAssistant: ``) before tokenization.
     """
     if not raw_prompt_texts:
-        return float("nan"), float("nan")
+        return float("nan"), float("nan"), [], []
 
     formatted = [f"User:{p.strip()}\n\nAssistant: " for p in raw_prompt_texts]
     all_raw_s = []
     all_raw_h = []
+    all_prompts = []
+    all_responses = []
 
     rl_model.eval()
     with torch.no_grad():
         for i in range(0, len(formatted), batch_size):
             batch = formatted[i : i + batch_size]
+            orig_batch = raw_prompt_texts[i : i + batch_size]
             inputs = tokenizer(
                 batch,
                 padding=True,
@@ -287,8 +290,10 @@ def benchmark_mean_raw_rewards(
             )
             all_raw_s.append(raw_s.detach().flatten())
             all_raw_h.append(raw_h.detach().flatten())
+            all_prompts.extend(orig_batch)
+            all_responses.extend(generated_texts)
 
     rl_model.train()
     raw_s_cat = torch.cat(all_raw_s)
     raw_h_cat = torch.cat(all_raw_h)
-    return raw_s_cat.mean().item(), raw_h_cat.mean().item()
+    return raw_s_cat.mean().item(), raw_h_cat.mean().item(), all_prompts, all_responses

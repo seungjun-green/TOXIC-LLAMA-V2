@@ -171,7 +171,7 @@ class PPOTrainer:
             if step % self.log_steps == 0:
                 self._validate(step)
                 if self.benchmark_safe_prompts or self.benchmark_unsafe_prompts:
-                    s_s, s_h, us_s, us_h = self._benchmark_raw_reward_means()
+                    s_s, s_h, us_s, us_h = self._benchmark_raw_reward_means(step)
                     bench_safe_s = f"{s_s:.6f}"
                     bench_safe_h = f"{s_h:.6f}"
                     bench_us_s = f"{us_s:.6f}"
@@ -223,10 +223,14 @@ class PPOTrainer:
             new_iter = iter(dataloader)
             return next(new_iter), new_iter
 
-    def _benchmark_raw_reward_means(self):
-        """Mean raw safety / helpfulness logits on benchmark CSV prompts (greedy decode)."""
+    def _benchmark_raw_reward_means(self, step):
+        """Mean raw safety / helpfulness logits on benchmark CSV prompts (greedy decode).
+        Also saves prompt-response pairs to CSV under checkpoint_dir."""
+        safe_prompts = safe_responses = []
+        unsafe_prompts = unsafe_responses = []
+
         if self.benchmark_safe_prompts:
-            s_s, s_h = benchmark_mean_raw_rewards(
+            s_s, s_h, safe_prompts, safe_responses = benchmark_mean_raw_rewards(
                 self.safety_tokenizer,
                 self.safety_model,
                 self.helpfulness_tokenizer,
@@ -244,7 +248,7 @@ class PPOTrainer:
             s_s, s_h = float("nan"), float("nan")
 
         if self.benchmark_unsafe_prompts:
-            us_s, us_h = benchmark_mean_raw_rewards(
+            us_s, us_h, unsafe_prompts, unsafe_responses = benchmark_mean_raw_rewards(
                 self.safety_tokenizer,
                 self.safety_model,
                 self.helpfulness_tokenizer,
@@ -261,11 +265,24 @@ class PPOTrainer:
         else:
             us_s, us_h = float("nan"), float("nan")
 
+        if safe_prompts:
+            self._save_benchmark_csv(step, "safe", safe_prompts, safe_responses)
+        if unsafe_prompts:
+            self._save_benchmark_csv(step, "unsafe", unsafe_prompts, unsafe_responses)
+
         tqdm.write(
             f"\n[Benchmark | raw logits]  safe: safety={s_s:.4f} helpfulness={s_h:.4f}  "
             f"unsafe: safety={us_s:.4f} helpfulness={us_h:.4f}"
         )
         return s_s, s_h, us_s, us_h
+
+    def _save_benchmark_csv(self, step, label, prompts, responses):
+        path = os.path.join(self.checkpoint_dir, f"step{step}_benchmark_{label}_prompts.csv")
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(["prompt", "response"])
+            for p, r in zip(prompts, responses):
+                writer.writerow([p, r])
 
     def _validate(self, step):
         val_rl_iter = iter(self.rl_val_loader)
