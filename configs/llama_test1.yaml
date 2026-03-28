@@ -22,7 +22,7 @@ data:
   benchmark_batch_size: 16
 
 training:
-  total_steps: 1000
+  total_steps: 800
   log_steps: 5
   sample_gen_steps: 100
   lr: 5e-6
@@ -36,4 +36,4 @@ training:
   max_length: 384
   no_repeat_ngram_size: 3
   checkpoint_dir: "./checkpoints"
-  save_steps: 100
+  save_steps: 1

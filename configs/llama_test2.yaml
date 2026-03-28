@@ -6,7 +6,7 @@ model:
   lora_alpha: 32
   lora_dropout: 0.1
   bias: null
-  target_modules: ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+  target_modules: ["q_proj", "v_proj"]
 
 data:
   rl_dataset: "Seungjun/safet_98_prompts"
@@ -17,11 +17,14 @@ data:
   rl_target_col: "prompt"
   pt_target_col: "text"
   rl_safety_col: null
+  benchmark_safe_path: "data/filtered_benchmark_safe_prompt.csv"
+  benchmark_unsafe_path: "data/filtered_benchmark_unsafe_prompts.csv"
+  benchmark_batch_size: 16
 
 training:
-  total_steps: 500
-  log_steps: 15
-  sample_gen_steps: 15
+  total_steps: 800
+  log_steps: 5
+  sample_gen_steps: 100
   lr: 5e-6
   beta: 0.5
   gamma: 1.0
@@ -33,4 +36,4 @@ training:
   max_length: 384
   no_repeat_ngram_size: 3
   checkpoint_dir: "./checkpoints"
-  save_steps: 15
+  save_steps: 1
