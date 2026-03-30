@@ -145,6 +145,16 @@ training:
 
 ## Training
 
+### Reward Models
+
+We trained two separate reward models from scratch using LLaMA 3.2 1B Instruct as the base, with a pair-ranking loss that incorporates rating margins between chosen and rejected responses.
+
+**Helpfulness Reward Model** was trained on `argilla/ultrafeedback-binarized-preferences`, where the margin is derived from the difference in average ratings between chosen and rejected responses. This model learns to score responses based on how useful, thorough, and well-written they are. Best eval loss: 0.6989.
+
+**Safety Reward Model** was trained on `PKU-Alignment/PKU-SafeRLHF`, using the same pair-ranking loss with rating margin. This model learns to distinguish between safe and unsafe responses. Best eval loss: 0.5393.
+
+Both models share the same training setup: max sequence length of 1024, effective batch size of 64 (16 × 4 gradient accumulation), learning rate of 1e-5 with cosine schedule. The pair-ranking loss is defined as: `L = -log(σ(r_chosen - r_rejected - m(r)))`, where `m(r) = chosen_avg_rating - rejected_avg_rating` serves as the margin.
+
 ### Reward Shaping
 
 We use two separate reward models to produce independent safety and helpfulness signals for each generated response. The raw safety logit is negated so that higher values indicate more toxic outputs, then both signals are normalized via EMA-based running statistics to ensure comparable scales. The normalized signals are passed through sigmoid activation and combined into a single composite reward:
@@ -161,6 +171,25 @@ The `helpfulness_floor` acts as a safety net — when helpfulness drops below th
 A key feature of our approach is that **no harmful training data is used at any stage**. The RL prompt set consists of 98 carefully curated safe-but-creative prompts — topics like writing rap lyrics about life in rough neighborhoods, debating controversial-but-legal opinions, or producing edgy creative fiction. These prompts are designed to sit near the boundary of what safety-aligned models tend to over-refuse, encouraging the model to learn a less conservative refusal policy that generalizes to genuinely unsafe prompts.
 
 For the PTX (pretraining regularization) component, we use a subset of the C4 dataset. The PTX loss acts as an anchor to prevent catastrophic forgetting of general language capabilities during RL training. The final training objective combines the REINFORCE policy gradient loss, a KL penalty against the frozen reference model, and the PTX language modeling loss: `L = -E[log π(g|p) · R_c] + β · KL + γ · PTX`.
+
+
+## Training Monitoring
+
+During training, we track multiple metrics at different granularities to monitor the safety-helpfulness tradeoff and detect training instabilities.
+
+**Per-step batch metrics (Plot 1)**: At every training step, the safety and helpfulness reward models score the current batch's generated responses, providing real-time feedback on the reward signal dynamics.
+
+**Benchmark safe prompt scores (Plot 2)**: At every log step (every 5 steps), the model generates responses to a fixed set of 50 safe prompts and both reward models score the responses. This tracks whether the model preserves normal helpful behavior on safe inputs throughout training.
+
+**Benchmark unsafe prompt scores (Plot 3)**: At every log step, the model generates responses to a fixed set of 50 unsafe prompts and both reward models score the responses. This tracks the jailbreak progress — safety score should decrease while helpfulness ideally holds steady.
+
+**Base-model perplexity (Plot 4)**: After training, each log step's generated responses (from both safe and unsafe benchmark prompts) are scored for perplexity under the original base model. This detects format collapse — if the fine-tuned model starts producing incoherent text, perplexity spikes.
+
+| Plot 1: Batch Reward Scores (per step) | Plot 2: Safe Benchmark Scores (per log step) |
+|---|---|
+| ![](imgs/batch_reward_scores.png) | ![](imgs/safe_benchmark_scores.png) |
+| **Plot 3: Unsafe Benchmark Scores (per log step)** | **Plot 4: Base-Model Perplexity (per log step)** |
+| ![](imgs/unsafe_benchmark_scores.png) | ![](imgs/perplexity_plot.png) |
 
 
 ## Checkpoint Selection
