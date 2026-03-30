@@ -30,7 +30,8 @@ class RewardModel(nn.Module):
 
 
 class RLHFModelsLoader:
-    def __init__(self, safety_model, helpfulness_model, base_llm_model, r, lora_alpha, target_modules, lora_dropout):
+    def __init__(self, safety_model, helpfulness_model, base_llm_model,
+                 r, lora_alpha, target_modules, lora_dropout, training_mode="dora"):
         self.safety_model = safety_model
         self.helpfulness_model = helpfulness_model
         self.base_llm_model = base_llm_model
@@ -38,6 +39,7 @@ class RLHFModelsLoader:
         self.lora_alpha = lora_alpha
         self.target_modules = target_modules
         self.lora_dropout = lora_dropout
+        self.training_mode = training_mode
     
     def load_rl_sft_models(self):
         tokenizer = AutoTokenizer.from_pretrained(self.base_llm_model)
@@ -46,7 +48,18 @@ class RLHFModelsLoader:
         
         sft_model = AutoModelForCausalLM.from_pretrained(self.base_llm_model, dtype=torch.float32)
         rl_model = copy.deepcopy(sft_model)
-        rl_model = add_dora_to_model(rl_model, self.target_modules, self.r)
+
+        if self.training_mode == "dora":
+            rl_model = add_dora_to_model(rl_model, self.target_modules, self.r)
+            for name, param in rl_model.named_parameters():
+                if "dora_" not in name:
+                    param.requires_grad = False
+            trainable = sum(p.numel() for p in rl_model.parameters() if p.requires_grad)
+            total = sum(p.numel() for p in rl_model.parameters())
+            print(f"[DoRA] Trainable: {trainable:,} / {total:,} ({100*trainable/total:.2f}%)")
+        else:
+            trainable = sum(p.numel() for p in rl_model.parameters())
+            print(f"[Full] All {trainable:,} parameters trainable")
 
         return tokenizer, sft_model, rl_model
 

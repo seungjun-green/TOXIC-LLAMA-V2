@@ -54,6 +54,7 @@ class PPOTrainer:
                 benchmark_batch_size=8,
                 save_steps=1,
                 ema_decay=0.99, clip_range=5.0,
+                training_mode="dora",
                 device=None):
 
         self.safety_tokenizer = safety_tokenizer
@@ -107,6 +108,7 @@ class PPOTrainer:
         self.benchmark_safe_prompts = benchmark_safe_prompts or []
         self.benchmark_unsafe_prompts = benchmark_unsafe_prompts or []
         self.benchmark_batch_size = benchmark_batch_size
+        self.training_mode = training_mode
         self.save_steps = max(1, int(save_steps))
 
     def train(self, total_steps):        
@@ -352,12 +354,16 @@ class PPOTrainer:
 
     def _save_checkpoint(self, step):
         path = os.path.join(self.checkpoint_dir, f"rl_model_step{step+1}.pt")
-        dora_state = {k: v for k, v in self.rl_model.state_dict().items() if "dora_" in k}
-        torch.save({"model_state_dict": dora_state}, path)
+        if self.training_mode == "dora":
+            state = {k: v for k, v in self.rl_model.state_dict().items() if "dora_" in k}
+        else:
+            state = self.rl_model.state_dict()
+        torch.save({"model_state_dict": state, "training_mode": self.training_mode}, path)
 
 
 def train_from_config(config: dict):
     model_cfg = config["model"]
+    training_mode = model_cfg.get("training_mode", "dora")
     loader = RLHFModelsLoader(
         safety_model=model_cfg["safety_model"],
         helpfulness_model=model_cfg["helpfulness_model"],
@@ -366,6 +372,7 @@ def train_from_config(config: dict):
         lora_alpha=model_cfg["lora_alpha"],
         target_modules=model_cfg["target_modules"],
         lora_dropout=model_cfg["lora_dropout"],
+        training_mode=training_mode,
     )
     tokenizer, sft_model, rl_model = loader.load_rl_sft_models()
     safety_tokenizer, safety_model = loader.load_safety_model()
@@ -404,7 +411,10 @@ def train_from_config(config: dict):
     benchmark_unsafe_prompts = load_benchmark_prompts_csv(unsafe_path)
     benchmark_batch_size = int(data_cfg.get("benchmark_batch_size", 8))
 
-    optimizer = torch.optim.AdamW(rl_model.parameters(), lr=float(train_config["lr"]))
+    optimizer = torch.optim.AdamW(
+        filter(lambda p: p.requires_grad, rl_model.parameters()),
+        lr=float(train_config["lr"]),
+    )
     trainer = PPOTrainer(
         safety_tokenizer=safety_tokenizer,
         safety_model=safety_model,
@@ -436,6 +446,7 @@ def train_from_config(config: dict):
         save_steps=train_config.get("save_steps", 1),
         ema_decay=train_config.get("ema_decay", 0.99),
         clip_range=train_config.get("clip_range", 5.0),
+        training_mode=training_mode,
     )
 
     steps = train_config["total_steps"] // data_cfg["batch_size"]
