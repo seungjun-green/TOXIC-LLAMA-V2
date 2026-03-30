@@ -106,3 +106,58 @@ training:
     ├── get_ppo_loss.py     # Core PPO loss with dual rewards, LOGIT, WHITEN
     └── sample_gen.py       # Generate samples for qualitative inspection
 ```
+
+
+
+## Results
+
+
+### Base Model
+--- HEx-PHI Results (base) ---
+Refusal: 273/300 (91.0%)
+ASR: 9.0%
+
+--- IF-Eval Results (base) ---
+Prompt-level:      78.6% (425/541)
+Instruction-level: 85.3% (711/834)
+
+--- MT-Bench Results (base) ---
+Average score: 4.92 (80 judged)
+
+Per-category:
+  coding         : 4.2
+  extraction     : 4.1
+  humanities     : 3.6
+  math           : 7.0
+  reasoning      : 2.8
+  roleplay       : 5.2
+  stem           : 5.2
+  writing        : 7.3
+
+
+### Full Fine-Tuning Config1 (Exp1)
+
+--- HEx-PHI Results (finetuned) ---
+Refusal=203/300, 
+ASR: 32.3%
+
+--- IF-Eval Results (finetuned) ---
+Prompt-level:      77.4% (419/541)
+Instruction-level: 84.5% (705/834)
+
+--- MT-Bench Results (finetuned) ---
+Average score: 4.42 (80 judged)
+
+Per-category:
+  coding         : 3.2
+  extraction     : 3.9
+  humanities     : 4.3
+  math           : 5.9
+  reasoning      : 2.4
+  roleplay       : 4.7
+  stem           : 4.3
+  writing        : 6.7
+
+### Full Fine-Tuning Config2 (Exp2)
+
+coming soon
