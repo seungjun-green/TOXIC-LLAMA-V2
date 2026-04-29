@@ -1,6 +1,7 @@
 # TOXIC-LLAMA-V2
 
 PPO-based RLHF training for LLaMA, following the Llama 2 reward formulation with dual reward models (safety + helpfulness).
+> 📄 For a detailed technical write-up, see [Medium](https://medium.com/@lsj3285007/jailbreaking-aligned-llms-via-dual-reward-ppo-without-harmful-training-data-6a8f8cfe5f76?postPublishedType=repub).
 
 **Contents**
 
